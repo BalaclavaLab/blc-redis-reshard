@@ -1,6 +1,12 @@
 package com.balaclavalab.redis;
 
 import io.lettuce.core.RedisURI;
+import io.lettuce.core.cluster.RedisClusterClient;
+import io.lettuce.core.cluster.api.StatefulRedisClusterConnection;
+import io.lettuce.core.cluster.api.sync.RedisAdvancedClusterCommands;
+import io.lettuce.core.cluster.models.partitions.ClusterPartitionParser;
+import io.lettuce.core.cluster.models.partitions.Partitions;
+import io.lettuce.core.codec.ByteArrayCodec;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.DefaultParser;
@@ -30,6 +36,14 @@ public class ReshardCli {
             System.err.println("Parsing failed. Reason: " + e.getMessage());
             printHelp(options);
         }
+
+        RedisClusterClient clusterClientFrom = RedisClusterClient.create("redis://localhost:7000/0");
+        StatefulRedisClusterConnection<byte[], byte[]> connectFrom = clusterClientFrom.connect(new ByteArrayCodec());
+        RedisAdvancedClusterCommands<byte[], byte[]> sync = connectFrom.sync();
+        String s = sync.clusterNodes();
+        System.out.println(s);
+        Partitions parse = ClusterPartitionParser.parse(s);
+        System.out.println(parse);
     }
 
     private static void printHelp(Options options) {
