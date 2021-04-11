@@ -30,6 +30,7 @@ buildscript {
 dependencies {
     implementation 'io.lettuce:lettuce-core:6.1.0.RELEASE'
     implementation 'commons-cli:commons-cli:1.4'
+    testCompile 'org.testcontainers:testcontainers:1.15.2'
 }
 
 docker {
