@@ -279,7 +279,7 @@ public class ReshardCli {
                             List<byte[]> keys = currentClusterCommands.clusterGetKeysInSlot(slot, migrationBatchSize);
                             while (!keys.isEmpty()) {
                                 System.out.println("Moving keys in slot " + slot + " to new node, key count: " + keys.size());
-                                currentClusterCommands.migrate(desiredPartitionUri.getHost(), desiredPartitionUri.getPort(), 0, 10_000, MigrateArgs.Builder.keys(keys));
+                                currentClusterCommands.migrate(desiredPartitionUri.getHost(), desiredPartitionUri.getPort(), 0, 10_000, MigrateArgs.Builder.keys(keys).replace());
                                 keys = currentClusterCommands.clusterGetKeysInSlot(slot, migrationBatchSize);
                             }
 
