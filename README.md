@@ -6,7 +6,7 @@ BLC Redis reshard utility.
 
 ### Docker
 
-* `docker run --rm -ti balaclavalab/blc-redis-reshard:0.1.0 -u redis://localhost:7000`
+* `docker run --rm -ti balaclavalab/blc-redis-reshard:0.1.1 -u redis://localhost:7000`
 
 ### Docker (building and running)
 
