@@ -17,6 +17,7 @@ import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -25,6 +26,7 @@ import java.util.Map;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
 import static java.util.stream.Collectors.toUnmodifiableList;
@@ -251,6 +253,30 @@ public class ReshardCli {
         System.out.println("Done\n");
     }
 
+    private static class ReshardAction {
+        public String fromNodeId;
+        public int slot;
+        public String toNodeId;
+
+        ReshardAction(String fromNodeId, int slot, String toNodeId) {
+            this.fromNodeId = fromNodeId;
+            this.slot = slot;
+            this.toNodeId = toNodeId;
+        }
+
+        public String getFromNodeId() {
+            return fromNodeId;
+        }
+
+        public int getSlot() {
+            return slot;
+        }
+
+        public String getToNodeId() {
+            return toNodeId;
+        }
+    }
+
     public static void reshardSlots(
             Partitions clusterPartitions,
             Map<Integer, String> slotToDesiredNodeIdMap,
@@ -258,40 +284,82 @@ public class ReshardCli {
             int migrationBatchSize,
             boolean commit) {
         System.out.println("Checking if all slots are assigned to desired nodes...");
+
+        List<ReshardAction> reshardActions = new ArrayList<>();
         IntStream.range(0, REDIS_SLOT_COUNT)
                 .forEachOrdered(slot -> {
                     RedisClusterNode currentPartition = clusterPartitions.getPartitionBySlot(slot);
                     String desiredNodeId = slotToDesiredNodeIdMap.get(slot);
                     RedisClusterNode desiredPartition = clusterPartitions.getPartitionByNodeId(desiredNodeId);
-                    RedisURI desiredPartitionUri = desiredPartition.getUri();
                     if (currentPartition != desiredPartition) {
-                        String currentNodeId = currentPartition.getNodeId();
-                        System.out.println("Slot " + slot + " is not on desired node, currently on " + currentNodeId + ", but should be on " + desiredNodeId);
-                        RedisCommands<byte[], byte[]> desiredClusterCommands = nodeIdToClusterCommands.get(desiredNodeId);
-                        RedisCommands<byte[], byte[]> currentClusterCommands = nodeIdToClusterCommands.get(currentNodeId);
-                        if (commit) {
-                            desiredClusterCommands.clusterSetSlotImporting(slot, currentNodeId);
-                            currentClusterCommands.clusterSetSlotMigrating(slot, desiredNodeId);
-                        }
-
-                        System.out.println("Moving keys in slot " + slot + " to new node, total key count: " + currentClusterCommands.clusterCountKeysInSlot(slot));
-                        if (commit) {
-                            List<byte[]> keys = currentClusterCommands.clusterGetKeysInSlot(slot, migrationBatchSize);
-                            while (!keys.isEmpty()) {
-                                System.out.println("Moving keys in slot " + slot + " to new node, key count: " + keys.size());
-                                currentClusterCommands.migrate(desiredPartitionUri.getHost(), desiredPartitionUri.getPort(), 0, 10_000, MigrateArgs.Builder.keys(keys).replace());
-                                keys = currentClusterCommands.clusterGetKeysInSlot(slot, migrationBatchSize);
-                            }
-
-                            desiredClusterCommands.clusterSetSlotNode(slot, desiredNodeId);
-                            currentClusterCommands.clusterSetSlotNode(slot, desiredNodeId);
-                            nodeIdToClusterCommands.values()
-                                    .forEach(clusterCommands -> clusterCommands.clusterSetSlotNode(slot, desiredNodeId));
-                            desiredClusterCommands.clusterSetSlotStable(slot);
-                        }
+                        reshardActions.add(new ReshardAction(currentPartition.getNodeId(), slot, desiredNodeId));
                     }
                 });
+
+        if (reshardActions.size() == 0) {
+            System.out.println("No actions needed. Done.\n");
+            return;
+        }
+
+        Map<String, List<ReshardAction>> nodeIdToRemainingReshardActionsMap = reshardActions.stream()
+                .collect(groupingBy(ReshardAction::getFromNodeId));
+        ReshardAction currentAction = reshardActions.get(0);
+        while (true) {
+            String fromNodeId = currentAction.getFromNodeId();
+            int slot = currentAction.getSlot();
+            String toNodeId = currentAction.getToNodeId();
+            moveSlot(clusterPartitions, slotToDesiredNodeIdMap, nodeIdToClusterCommands, slot, migrationBatchSize, commit);
+            nodeIdToRemainingReshardActionsMap.get(fromNodeId).remove(currentAction);
+            reshardActions.remove(currentAction);
+            List<ReshardAction> remainingReshardActionsForToNodeId = nodeIdToRemainingReshardActionsMap.get(toNodeId);
+            if (remainingReshardActionsForToNodeId != null && remainingReshardActionsForToNodeId.size() > 0) {
+                currentAction = remainingReshardActionsForToNodeId.iterator().next();
+            } else if (reshardActions.size() > 0) {
+                currentAction = reshardActions.iterator().next();
+            } else {
+                break;
+            }
+        }
         System.out.println("Done\n");
+    }
+
+    private static void moveSlot(
+            Partitions clusterPartitions,
+            Map<Integer, String> slotToDesiredNodeIdMap,
+            Map<String, RedisCommands<byte[], byte[]>> nodeIdToClusterCommands,
+            int slot,
+            int migrationBatchSize,
+            boolean commit) {
+        RedisClusterNode currentPartition = clusterPartitions.getPartitionBySlot(slot);
+        String desiredNodeId = slotToDesiredNodeIdMap.get(slot);
+        RedisClusterNode desiredPartition = clusterPartitions.getPartitionByNodeId(desiredNodeId);
+        RedisURI desiredPartitionUri = desiredPartition.getUri();
+        if (currentPartition != desiredPartition) {
+            String currentNodeId = currentPartition.getNodeId();
+            System.out.println("Slot " + slot + " is not on desired node, currently on " + currentNodeId + ", but should be on " + desiredNodeId);
+            RedisCommands<byte[], byte[]> desiredClusterCommands = nodeIdToClusterCommands.get(desiredNodeId);
+            RedisCommands<byte[], byte[]> currentClusterCommands = nodeIdToClusterCommands.get(currentNodeId);
+            if (commit) {
+                desiredClusterCommands.clusterSetSlotImporting(slot, currentNodeId);
+                currentClusterCommands.clusterSetSlotMigrating(slot, desiredNodeId);
+            }
+
+            System.out.println("Moving keys in slot " + slot + " to new node, total key count: " + currentClusterCommands.clusterCountKeysInSlot(slot));
+            if (commit) {
+                List<byte[]> keys = currentClusterCommands.clusterGetKeysInSlot(slot, migrationBatchSize);
+                while (!keys.isEmpty()) {
+                    System.out.println("Moving keys in slot " + slot + " to new node, key count: " + keys.size());
+                    currentClusterCommands.migrate(desiredPartitionUri.getHost(), desiredPartitionUri.getPort(), 0, 10_000, MigrateArgs.Builder.keys(keys).replace());
+                    keys = currentClusterCommands.clusterGetKeysInSlot(slot, migrationBatchSize);
+                }
+
+                desiredClusterCommands.clusterSetSlotNode(slot, desiredNodeId);
+                currentClusterCommands.clusterSetSlotNode(slot, desiredNodeId);
+                nodeIdToClusterCommands.values()
+                        .forEach(clusterCommands -> clusterCommands.clusterSetSlotNode(slot, desiredNodeId));
+                desiredClusterCommands.clusterSetSlotStable(slot);
+            }
+        }
     }
 
     private static List<List<Integer>> createDesiredSlots(int nodeCount) {
@@ -300,8 +368,8 @@ public class ReshardCli {
                 .boxed()
                 .map(nodeNumber ->
                         IntStream.range(
-                                slotCountPerNode * nodeNumber,
-                                nodeNumber == (nodeCount - 1) ? REDIS_SLOT_COUNT : slotCountPerNode * (nodeNumber + 1))
+                                        slotCountPerNode * nodeNumber,
+                                        nodeNumber == (nodeCount - 1) ? REDIS_SLOT_COUNT : slotCountPerNode * (nodeNumber + 1))
                                 .boxed().collect(toList()))
                 .collect(toList());
     }

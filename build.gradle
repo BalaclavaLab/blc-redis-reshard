@@ -3,7 +3,7 @@ apply plugin: 'application'
 apply plugin: 'com.bmuschko.docker-java-application'
 
 group 'com.balaclavalab'
-version '0.1.0'
+version '0.3.0'
 
 description = 'BLC Redis reshard utility'
 mainClassName = 'com.balaclavalab.redis.ReshardCli'
@@ -39,4 +39,12 @@ docker {
         ports = [8080]
         images = ["balaclavalab/${applicationName}:${version}"]
     }
+}
+
+task dockerBuildxImage(type:Exec) {
+    group 'docker'
+    dependsOn dockerCreateDockerfile
+    workingDir 'build/docker'
+    executable 'docker'
+    args = ['buildx', 'build', '--platform', 'linux/amd64,linux/arm64', '-t', "balaclavalab/$project.name:${project.version}", '-t', "balaclavalab/$project.name:latest", '--push', '.']
 }
