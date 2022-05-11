@@ -41,6 +41,8 @@ public class ReshardCli {
         options.addOption("e", "excludeNodeIds", true, "Exclude node ids from balancing");
         options.addOption("a", "assign", false, "Perform unassigned slot assignment");
         options.addOption("r", "reshard", false, "Perform reshard");
+        options.addOption("o", "orderForNodeIds", true, "Desired node order");
+        options.addOption("ckis", "countkeysinslots", false, "Print number of keys in each slot");
         options.addOption("mb", "migrationBatchSize", true, "Migration batch size (default 1000)");
         options.addOption("y", "yes", false, "Do actual operations");
         options.addOption("t", "writeTestData", false, "Write test data to cluster (for testing)");
@@ -61,6 +63,11 @@ public class ReshardCli {
                         : List.of(excludeNodeIdsString.split(","));
                 boolean assign = commandLine.hasOption("a");
                 boolean reshard = commandLine.hasOption("r");
+                String specifiedOrderForNodeIdsString = commandLine.getOptionValue("o");
+                List<String> specifiedOrderForNodeIds = specifiedOrderForNodeIdsString == null
+                        ? Collections.emptyList()
+                        : List.of(specifiedOrderForNodeIdsString.split(","));
+                boolean countKeysInSlot = commandLine.hasOption("ckis");
                 int migrationBatchSize = Integer.parseInt(commandLine.getOptionValue("migrationBatchSize", "1000"));
                 boolean commit = commandLine.hasOption("y");
                 boolean writeTestData = commandLine.hasOption("t");
@@ -85,7 +92,9 @@ public class ReshardCli {
                 printClusterSlots(clusterSlots);
 
                 List<List<Integer>> desiredSlots = createDesiredSlots(nodeCount);
-                List<String> optimalNodeIds = getOptimalNodeIds(clusterSlots, desiredSlots, clusterMasterNodes, excludeNodeIds);
+                List<String> optimalNodeIds = specifiedOrderForNodeIds.isEmpty()
+                        ? getOptimalNodeIds(clusterSlots, desiredSlots, clusterMasterNodes, excludeNodeIds)
+                        : specifiedOrderForNodeIds;
                 assert optimalNodeIds.size() == desiredSlots.size();
                 printDesiredClusterSlots(desiredSlots, optimalNodeIds);
 
@@ -107,6 +116,10 @@ public class ReshardCli {
                             .forEach(slot -> slotToDesiredNodeIdMap.put(slot, optimalNodeIds.get(nodeNumber)));
                 }
 
+                if (countKeysInSlot) {
+                    printCountKeysInSlot(clusterPartitions, nodeIdToClusterCommands);
+                }
+
                 if (assign) {
                     if (clusterSlots.isEmpty()) {
                         emptyClusterSlotAssignment(clusterMasterNodes, desiredSlots, nodeIdToClusterCommands, commit);
@@ -116,7 +129,6 @@ public class ReshardCli {
                     }
 
                     checkIfAllSlotsAreAssigned(clusterPartitions, slotToDesiredNodeIdMap, nodeIdToClusterCommands, commit);
-
                 }
 
                 if (writeTestData && commit) {
@@ -231,6 +243,27 @@ public class ReshardCli {
             }
         }
         System.out.println("Done\n");
+    }
+
+    private static void printCountKeysInSlot(
+            Partitions clusterPartitions,
+            Map<String, RedisCommands<byte[], byte[]>> nodeIdToClusterCommands) {
+        System.out.println("Number of keys in each slot");
+        IntStream.range(0, REDIS_SLOT_COUNT)
+                .forEachOrdered(slot -> {
+                    RedisClusterNode partitionBySlot = clusterPartitions.getPartitionBySlot(slot);
+                    String nodeId = partitionBySlot.getNodeId();
+                    long keys = nodeIdToClusterCommands.get(nodeId).clusterCountKeysInSlot(slot);
+                    System.out.println("Slot " + slot + " has " + keys + " keys on node " + nodeId);
+                    nodeIdToClusterCommands.entrySet().stream()
+                            .filter(entry -> !entry.getKey().equals(nodeId))
+                            .forEach(entry -> {
+                                long keyInEntry = nodeIdToClusterCommands.get(entry.getKey()).clusterCountKeysInSlot(slot);
+                                if (keyInEntry > 0) {
+                                    System.out.println("  ... slot " + slot + " has " + keys + " keys on unassigned node " + nodeId);
+                                }
+                            });
+                });
     }
 
     public static void checkIfAllSlotsAreAssigned(
@@ -349,7 +382,7 @@ public class ReshardCli {
                 List<byte[]> keys = currentClusterCommands.clusterGetKeysInSlot(slot, migrationBatchSize);
                 while (!keys.isEmpty()) {
                     System.out.println("Moving keys in slot " + slot + " to new node, key count: " + keys.size());
-                    currentClusterCommands.migrate(desiredPartitionUri.getHost(), desiredPartitionUri.getPort(), 0, 10_000, MigrateArgs.Builder.keys(keys).replace());
+                    currentClusterCommands.migrate(desiredPartitionUri.getHost(), desiredPartitionUri.getPort(), 0, 60_000, MigrateArgs.Builder.keys(keys).replace());
                     keys = currentClusterCommands.clusterGetKeysInSlot(slot, migrationBatchSize);
                 }
 
@@ -357,7 +390,7 @@ public class ReshardCli {
                 currentClusterCommands.clusterSetSlotNode(slot, desiredNodeId);
                 nodeIdToClusterCommands.values()
                         .forEach(clusterCommands -> clusterCommands.clusterSetSlotNode(slot, desiredNodeId));
-                desiredClusterCommands.clusterSetSlotStable(slot);
+                // desiredClusterCommands.clusterSetSlotStable(slot);
             }
         }
     }

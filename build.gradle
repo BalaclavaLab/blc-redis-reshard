@@ -3,7 +3,7 @@ apply plugin: 'application'
 apply plugin: 'com.bmuschko.docker-java-application'
 
 group 'com.balaclavalab'
-version '0.3.0'
+version '0.3.2'
 
 description = 'BLC Redis reshard utility'
 mainClassName = 'com.balaclavalab.redis.ReshardCli'
