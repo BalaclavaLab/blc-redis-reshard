@@ -260,7 +260,7 @@ public class ReshardCli {
                             .forEach(entry -> {
                                 long keyInEntry = nodeIdToClusterCommands.get(entry.getKey()).clusterCountKeysInSlot(slot);
                                 if (keyInEntry > 0) {
-                                    System.out.println("  ... slot " + slot + " has " + keys + " keys on unassigned node " + nodeId);
+                                    System.out.println("  ... slot " + slot + " has " + keys + " keys on unassigned node " + entry.getKey());
                                 }
                             });
                 });
